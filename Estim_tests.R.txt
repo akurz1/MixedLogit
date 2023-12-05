@@ -1,0 +1,202 @@
+# code depends on package psychotools
+
+# y is binary response matrix (persons in rows, items in columns)
+# x is covariate matrix (persons in rows, covariates in columns)
+# in case of one covariate x must also be a matrix, i.e., a one column matrix 
+
+estimation <- function(y, x){
+
+  loglike <- function(b){
+  
+  h <- function(i) b[1:k] + colSums(t(array(b[(k+1):(k*(p+1))], dim = c(k, p))) * x[i,])
+  l <- lapply(1:n, h)
+  m <- t(simplify2array(l, higher = TRUE))
+  
+  g <- apply(X = -m, MARGIN = 1, FUN = psychotools::elementary_symmetric_functions)
+  r <- rowSums(y)
+  
+  h1 <- function(j) g[[j]]$`0`[r[j]+1]
+  l1 <- lapply(1:n, h1)
+  c <- unlist(l1)
+  
+  logl <- sum(rowSums(y * m) - log(c))
+  
+  return(-logl)
+  
+  }
+  
+  
+  score <- function(b){
+  
+  h <- function(i) b[1:k] + colSums(t(array(b[(k+1):(k*(p+1))], dim = c(k, p))) * x[i,])
+  l <- lapply(1:n, h)
+  m <- t(simplify2array(l, higher = TRUE))
+  
+  g <- apply(X = -m, MARGIN = 1, FUN = psychotools::elementary_symmetric_functions, order = 1)
+  r <- rowSums(y)
+   
+  h1 <- function(j) g[[j]]$`0`[r[j]+1]
+  l1 <- lapply(1:n, h1)
+  c <- unlist(l1)
+  
+  h2 <- function(j) g[[j]]$`1`[r[j]+1,]
+  l2 <- lapply(1:n, h2)
+  cp <- t(simplify2array(l2, higher = TRUE)) / c
+  
+  h3 <- function(j) colSums(cp * x[,j])
+  l3 <- lapply(1:ncol(x), h3)
+  e <- c(colSums(cp), unlist(l3))
+  
+  h4 <- function(j) colSums(y * x[,j])
+  l4 <- lapply(1:ncol(x), h4)
+  o <- c(colSums(y), unlist(l4))
+  
+  s <- o - e
+  
+  return(-s)
+  
+  }
+  
+  
+  
+  info <- function(b){
+  
+  h <- function(i) b[1:k] + colSums(t(array(b[(k+1):(k*(p+1))], dim = c(k, p))) * x[i,])
+  l <- lapply(1:n, h)
+  m <- t(simplify2array(l, higher = TRUE))
+  
+  g <- apply(X = -m, MARGIN = 1, FUN = psychotools::elementary_symmetric_functions, order = 2)
+  r <- rowSums(y)
+  
+  
+  
+  h1 <- function(i){ 
+  cp1 <- g[[i]]$'1' / g[[i]]$`0`
+  cp2 <- g[[i]]$'2' / g[[i]]$`0`
+  
+  h2 <- function(j) cp2[,,j][r[i]+1,]
+  c2 <- simplify2array(lapply(1:k, h2))
+  
+  Ip <- c2 - cp1[r[i]+1,] %o% cp1[r[i]+1,]
+  
+  return(Ip)
+  
+  }
+  
+  
+  list <- lapply(1:n, h1)
+  I <- Matrix::bdiag(list)
+  
+  return(I)
+  
+  }
+  
+  
+  # Jacobian for each person
+  
+  Jp <- function(i){
+  
+  h <- function(){ 
+  a <- array(rep(0, k), dim = c(k, k))
+  diag(a) <- rep(1, k)
+  return(a)
+  }
+  
+  a <- replicate(p, h())
+  a1 <- t(apply(X = a, FUN = cbind, MARGIN = 2))
+  
+  a2 <- as.vector(t(array(x[i,], dim = c(p, k))))
+  
+  a3 <- array(rep(0, k), dim = c(k, k))
+  diag(a3) <- rep(1, k)
+  
+  a4 <- cbind(a3, t(t(a1) * a2))
+  
+  return(a4) 
+  
+  }
+  
+  
+  
+  n <- nrow(x)
+  k <- ncol(y)
+  p <- ncol(x)
+  
+  
+  a3 <- simplify2array(lapply(1:n, Jp), higher = TRUE)
+  J <- apply(X = a3, FUN = cbind, MARGIN = 2)          
+  J <- J[,-seq(from = 1, to = (p+1)*k, by = k)]  # total Jacobian matrix (for all persons)
+  
+  res <-optim(par = rep(0, (p+1)*k), fn = loglike, gr = score, method = 'BFGS')  # unrestricted optimization of loglike
+  b <- res$par  # unrestricted CML estimates (not normalized)
+  mb <- t(array(b, dim = c(k, p+1)))
+  mb <- mb - mb[,1] 
+  rownames(mb) <- c('base', 1:p)
+  colnames(mb) <- 1:k 
+  # normalized estimates, parameters referring to first time point (or item) set to 0
+  # first row refers to baseline parameters, second row to slope parameters of 
+  # first covariate, third row to slope parameters of second covariate, etc. 
+  
+  urlogl <- res$value * -1  # unrestricted maximum of loglike 
+  Iur <- t(J) %*% info(b = b) %*% J  # information matrix evaluated at unrestricted estimates
+  C <- solve(Iur)  # asymptotic covariance matrix of estimtes
+  SE <- cbind(rep(NA, p+1), t(array(sqrt(diag(C)), dim = c(k-1, p+1)))) 
+  rownames(SE) <- c('base', 1:p)
+  colnames(SE) <- 1:k
+  # standard errors of all estimates 
+  
+  z <- mb / SE  # signed Wald (z) tests of hypothesis that each parameter equals 0
+  pv <- 1 - pchisq(z^2, 1)  # corresponding two-sided p values
+  rownames(z) <- c('base', 1:p)
+  colnames(z) <- 1:k
+  rownames(pv) <- c('base', 1:p)
+  colnames(pv) <- 1:k
+  
+  resr <- psychotools::raschmodel(y)  # restricted optimization of loglike
+  br <- -c(0, resr$coefficients, rep(0, p*k))  # restricted CML estimates
+  rlogl <- resr$loglik  # restricted maximum of loglike
+  
+  
+  # likelihood ratio test
+  
+  df <- p * (k - 1)
+  
+  LR <- -2 * (rlogl - urlogl)
+  plr <- 1 - pchisq(LR, df)
+  
+  
+  # Gradient test
+  
+  G <- t(-score(b = br)) %*% b 
+  pg <- 1 - pchisq(G, df)
+  
+  
+  # Rao score test
+  
+  Ir <- t(J) %*% info(b = br) %*% J  # information matrix evaluated at restricted estimates
+  RS <- t(score(b = br)[-seq(from = 1, to = (p+1)*k, by = k)]) %*% solve(Ir) %*% score(b = br)[-seq(from = 1, to = (p+1)*k, by = k)]
+  prs <- 1 - pchisq(RS, df)
+   
+  # Wald test
+  
+  Cov <- solve(Iur)[-(1:(k-1)),-(1:(k-1))]  # asympt. covariance matrix of free slope parameters
+  bf <- t(array(b[-(1:k)], dim = c(k, p)))
+  W <- t(as.vector(t((bf - bf[,1])[,-1]))) %*% solve(Cov) %*% as.vector(t((bf - bf[,1])[,-1]))
+  pw <- 1 - pchisq(W, df)
+  
+  t <- rbind(c(round(LR, 3), df, round(plr, 3)), c(round(G, 3), df, round(pg, 3)), c(round(RS, 3), df, round(prs, 3)), c(round(W, 3), df, round(pw, 3)))
+  colnames(t) <- c('test statistic', 'df', 'p value')
+  rownames(t) <- c('likelihood ratio test', 'gradient test', 'Rao score test', 'Wald test')
+  
+  AIC <- -2 * urlogl + 2 * p * (k - 1)
+  row <- rowSums(y)
+  ni <- length(row[(rowSums(y) > 0 & rowSums(y) < k)]) 
+  BIC <- -2 * urlogl + log(ni) * p * (k - 1)
+  t1 <- array(c(AIC, BIC), dim = c(1, 2))
+  colnames(t1) <- c('AIC', 'BIC')
+  
+  l <- list('CML estimates' = round(mb, 3), 'standard errors' = round(SE, 3), 'Z statistics' = round(z, 3), 'two-sided p values' = round(pv, 3), 'log likelihood' = urlogl, 'tests' = t, 'information criteria' = t1)
+  
+  return(l)
+
+}

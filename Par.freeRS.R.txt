@@ -1,0 +1,39 @@
+# code depends on package RaschSampler
+# Rao score test based on resampling (for small samples) 
+
+# y is binary response matrix (persons in rows, items in columns)
+# x is covariate matrix (persons in rows, covariates in columns)
+# in case of one covariate x must also be a matrix, i.e., a one column matrix
+
+n = nrow(y)
+k = ncol(y) 
+p = ncol(x)
+
+r <- 2^13 - 1  # max. number of samples that can be drawn using RaschSampler 
+o <- RaschSampler::rsampler(y, controls = RaschSampler::rsctrl(n_eff = r, step = 50)) 
+
+# auxiliary functions
+fc <- function(q) array(x[,q], dim = c(nrow(y), k))
+lx <- lapply(1:ncol(x), fc)
+xp <- t(apply(X = simplify2array(lx), FUN = cbind, MARGIN = 1))
+
+f <- function(y) colSums(array(y, dim = c(nrow(y), ncol(x)*k)) * xp) 
+list <- RaschSampler::rstats(o, f) 
+h <- sapply(list, FUN = cbind)  # sufficient statistics for all parameters 
+e <- rowMeans(h[,2:r])  # expected values of sufficent statistics 
+Cov <- var(t(h)[-1,])  # covariance matrix of sufficient statistics 
+
+# covariance matrix of sufficient statistics for free parameters
+freeCov <- Cov[-seq(from = 1, to = ncol(x)*k, by = k),-seq(from = 1, to = ncol(x)*k, by = k)] 
+score <- h - e  # score function 
+
+f1 <- function(j) t(score[-seq(from = 1, to = ncol(x)*k, by = k),j]) %*% solve(freeCov) %*% score[-seq(from = 1, to = ncol(x)*k, by = k),j]
+l <- lapply(1:ncol(score), f1)
+T <- unlist(l)[1]  # observed Rao score test statistic                 
+pt <- table(unlist(l[-1]) < T)[1] / r  # p value
+
+s <- score^2 / diag(Cov)
+Z <- s[,1]  # RS for each slope parameter
+f2 <- function(q) table(s[q,-1] < s[q,1])[1] / r
+as.vector(unlist(lapply(1:(p*k), f2)))  # p values
+1 - pchisq(Z, 1)  # p values determined from chi square distribution with one degree of freedom
